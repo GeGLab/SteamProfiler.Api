@@ -9,8 +9,8 @@ Thanks for helping improve SteamProfiler.
   changes in an issue first.
 - Never include credentials, production databases, address hashes, access
   logs, or private Steam profile data in an issue, fixture, or commit.
-- Preserve the standard-library core runtime. Shareable PNG comparison cards
-  use the pinned Pillow renderer for Unicode fonts and bounded JPEG/PNG decoding.
+- Preserve the standard-library core runtime. Shareable PNG/WebP comparison cards
+  use the pinned Pillow renderer for Unicode fonts and bounded image/animation decoding.
   Additional dependencies need a clear operational benefit and discussion first.
 - The Python service is frozen at `v1.0.0` and takes security fixes only. New
   behavior and behavior fixes belong in `v2/` (.NET 10), with the first-party

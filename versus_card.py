@@ -8,8 +8,9 @@ from functools import lru_cache
 from io import BytesIO
 import math
 from pathlib import Path
+import threading
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 import art
 
@@ -27,6 +28,10 @@ MUTED = (142, 138, 155)
 LEFT = (255, 180, 84)
 RIGHT = WHITE
 GOLD = LEFT
+EXPORT_LOCK = threading.Lock()
+MAX_EXPORT_BYTES = 8 * 1024 * 1024
+FRAME_MS = 80
+MAX_FRAMES = 36
 
 TEXT = {
     "pt": {"tag": "COMPARAÇÃO DE PERFIS", "title": "O próximo jogo é melhor juntos.",
@@ -129,12 +134,21 @@ def load_assets(first, second, games):
         url = (profile.get("profile") or {}).get("avatar")
         if url:
             tasks[f"avatar:{index}"] = (art.avatar, url)
+        items = (profile.get("profile") or {}).get("items") or {}
+        background = items.get("background") or items.get("mini") or {}
+        if background.get("image_large"):
+            tasks[f"background:{index}"] = (art.profile_media, background["image_large"])
+        for kind in ("avatar", "frame"):
+            item = items.get(kind) or {}
+            url = item.get("image_small") or item.get("image_large")
+            if url:
+                tasks[f"{kind}-motion:{index}"] = (art.profile_media, url)
     for game in games[:6]:
         if str(game["appid"]).isdigit():
             tasks[f"game:{game['appid']}"] = (art.thumb, int(game["appid"]))
     results = {}
-    # At most two avatars and six cached Steam capsules, with art.py's host
-    # allowlists, byte limits and timeouts. Asset failures never fail the card.
+    # Optional Steam assets share strict host/byte/time limits. Failures never
+    # fail the card, and the pool bounds simultaneous CDN connections.
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {key: pool.submit(function, argument) for key, (function, argument) in tasks.items()}
         for key, future in futures.items():
@@ -145,12 +159,18 @@ def load_assets(first, second, games):
     return results
 
 
-def render(first, second, locale="pt-BR", assets=None):
+def _canvas(first, second, locale, assets):
     lang = "pt" if str(locale).lower().startswith("pt") else "en"
     words = TEXT[lang]
     data = comparison(first, second)
-    assets = load_assets(first, second, data["games"]) if assets is None else assets
     canvas = Image.new("RGB", (WIDTH, HEIGHT), BG)
+    for index, x in enumerate((0, 800)):
+        background = _image(assets.get(f"background:{index}"), (800, 760))
+        if background:
+            background = background.filter(ImageFilter.GaussianBlur(18))
+            fade = Image.new("L", (1, 760))
+            fade.putdata([round(42 * (1 - y / 759) ** 1.4) for y in range(760)])
+            canvas.paste(background, (x, 0), fade.resize((800, 760)))
     draw = ImageDraw.Draw(canvas)
     for x in range(64, WIDTH, 48):
         for y in range(28, 172, 48):
@@ -170,15 +190,18 @@ def render(first, second, locale="pt-BR", assets=None):
         name = str(info.get("persona") or "Player")
         names.append(name)
         draw.rounded_rectangle((x, 237, x + 708, 535), radius=26, fill=PANEL, outline=LINE, width=1)
+        background = _image(assets.get(f"background:{index}"), (706, 296))
+        if background:
+            shade = Image.new("L", (1, 296))
+            shade.putdata([round(108 - 78 * y / 295) for y in range(296)])
+            panel = Image.new("RGB", background.size, PANEL)
+            panel.paste(background, (0, 0), shade.resize(background.size))
+            mask = Image.new("L", background.size)
+            ImageDraw.Draw(mask).rounded_rectangle((0, 0, 705, 295), radius=25, fill=255)
+            canvas.paste(panel, (x + 1, 238), mask)
         draw.rounded_rectangle((x + 26, 264, x + 32, 338), radius=3, fill=accent)
-        avatar = _image(assets.get(f"avatar:{index}"), (96, 96))
-        mask = Image.new("L", (96, 96), 0)
-        ImageDraw.Draw(mask).rounded_rectangle((0, 0, 95, 95), radius=24, fill=255)
-        if avatar:
-            canvas.paste(avatar, (x + 52, 265), mask)
-        else:
-            draw.rounded_rectangle((x + 52, 265, x + 148, 361), radius=24, fill=accent)
-            _text(draw, name[:1].upper(), (x + 82, 292), 42, 700, BG)
+        draw.rounded_rectangle((x + 52, 265, x + 148, 361), radius=24, fill=accent)
+        _text(draw, name[:1].upper(), (x + 82, 292), 42, 700, BG)
         _text(draw, name, (x + 174, 277), 32, 720, width=488)
         level = info.get("level")
         subtitle = f"{words['level']} {level}" if level is not None else "STEAM PLAYER"
@@ -244,6 +267,75 @@ def render(first, second, locale="pt-BR", assets=None):
     draw.line((64, 1345, 1536, 1345), fill=LINE)
     _text(draw, "steamprofiler.org", (64, 1364), 17, 600, WHITE, family="mono")
     _text(draw, words["public"], (580, 1364), 17, 400, MUTED, width=950)
+    return canvas
+
+
+def _sequence(body, size):
+    """Decode small timed portraits; bound both source work and retained pixels."""
+    if not body or len(body) > art.MAX_MEDIA_BYTES:
+        return []
+    try:
+        with Image.open(BytesIO(body)) as source:
+            count = getattr(source, "n_frames", 1)
+            pixels = source.width * source.height
+            if pixels > 4_000_000 or pixels * count > 32_000_000 or count > 240:
+                return []
+            start = 1 if source.info.get("default_image") else 0
+            frames, elapsed = [], 0
+            for index in range(start, count):
+                source.seek(index)
+                duration = min(1000, max(20, float(source.info.get("duration", 100))))
+                frame = ImageOps.fit(source.convert("RGBA"), size, method=Image.Resampling.LANCZOS)
+                elapsed += duration
+                frames.append((elapsed, frame))
+                if elapsed >= MAX_FRAMES * FRAME_MS:
+                    break
+            return frames
+    except (OSError, ValueError, EOFError, Image.DecompressionBombError):
+        return []
+
+
+def _portraits(assets):
+    portraits = []
+    for index, x in enumerate((64, 828)):
+        avatar = _sequence(assets.get(f"avatar-motion:{index}"), (96, 96))
+        avatar = avatar or _sequence(assets.get(f"avatar:{index}"), (96, 96))
+        if avatar:
+            mask = Image.new("L", (96, 96))
+            ImageDraw.Draw(mask).rounded_rectangle((0, 0, 95, 95), radius=24, fill=255)
+            for _, frame in avatar:
+                frame.putalpha(Image.composite(frame.getchannel("A"), Image.new("L", frame.size), mask))
+            portraits.append(((x + 52, 265), avatar))
+        frame = _sequence(assets.get(f"frame-motion:{index}"), (128, 128))
+        if frame:
+            portraits.append(((x + 36, 249), frame))
+    return portraits
+
+
+def _at_time(canvas, portraits, time_ms):
+    result = canvas.copy()
+    for position, frames in portraits:
+        moment = time_ms % frames[-1][0]
+        image = next(frame for end, frame in frames if moment < end)
+        result.paste(image, position, image)
+    return result
+
+
+def render(first, second, locale="pt-BR", assets=None, animated=False):
+    assets = load_assets(first, second, comparison(first, second)["games"]) if assets is None else assets
+    canvas = _canvas(first, second, locale, assets)
+    portraits = _portraits(assets)
+    poster = _at_time(canvas, portraits, 0)
     output = BytesIO()
-    canvas.save(output, format="PNG", optimize=True)
+    if not animated:
+        poster.save(output, format="PNG", optimize=True)
+        return output.getvalue()
+    duration = max((frames[-1][0] for _, frames in portraits if len(frames) > 1), default=0)
+    count = min(MAX_FRAMES, math.ceil(duration / FRAME_MS))
+    frames = [_at_time(canvas, portraits, index * FRAME_MS) for index in range(1, count)]
+    poster.save(output, format="WEBP", save_all=bool(frames), append_images=frames,
+                duration=FRAME_MS, loop=0, quality=88, method=2)
+    if output.tell() > MAX_EXPORT_BYTES:
+        output = BytesIO()
+        poster.save(output, format="WEBP", quality=85, method=2)
     return output.getvalue()

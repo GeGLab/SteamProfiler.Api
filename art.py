@@ -74,6 +74,47 @@ BACK_HOSTS = ("cdn.cloudflare.steamstatic.com", "cdn.akamai.steamstatic.com",
 # kilobytes. Still a ceiling, because a bad answer must not be able to fill
 # the disk, and still far under what the artwork itself is allowed to weigh.
 MAX_BACK_BYTES = 3 * 1024 * 1024
+MEDIA_DIR = ART_DIR / "profile-media"
+MAX_MEDIA_BYTES = 8 * 1024 * 1024
+
+
+def _media_url(url):
+    try:
+        parsed = urllib.parse.urlparse(url)
+        return (parsed.scheme == "https" and parsed.hostname in FACE_HOSTS + BACK_HOSTS
+                and not parsed.username and not parsed.password and parsed.port in (None, 443))
+    except (TypeError, ValueError):
+        return False
+
+
+class _MediaRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _media_url(newurl):
+            raise urllib.error.URLError("Non-Steam media redirect")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def profile_media(url):
+    """Bounded Steam GIF/APNG/WebP assets, retaining animation and transparency."""
+    if not _media_url(url):
+        return None
+
+    def fetch_media():
+        request = urllib.request.Request(url, headers={"User-Agent": "steamprofiler.org"})
+        try:
+            with urllib.request.build_opener(_MediaRedirect()).open(request, timeout=8) as response:
+                if response.status != 200:
+                    return None
+                body = response.read(MAX_MEDIA_BYTES + 1)
+        except (urllib.error.URLError, OSError):
+            return None
+        webp = body[:4] == b"RIFF" and body[8:12] == b"WEBP"
+        if len(body) > MAX_MEDIA_BYTES or not (sniff(body) or body[:6] in (b"GIF87a", b"GIF89a") or webp):
+            return None
+        return body
+
+    name = hashlib.sha1(url.encode("utf-8")).hexdigest()[:24]
+    return _keep(MEDIA_DIR / f"{name}.bin", f"media:{name}", fetch_media)
 
 # Steam's art is a few hundred KB. Anything much larger is not what we asked
 # for, and writing it would mean a bad response could fill the disk.
@@ -260,8 +301,10 @@ def forget(url):
     block has to take the file with it. The caller passes the URL it read off
     the profile; the name is recomputed here rather than stored anywhere,
     because a steamid is not something this cache keeps."""
+    removed = False
     for hosts, directory, suffix in ((FACE_HOSTS, FACE_DIR, ".jpg"),
-                                     (BACK_HOSTS, BACK_DIR, ".bin")):
+                                     (BACK_HOSTS, BACK_DIR, ".bin"),
+                                     (FACE_HOSTS + BACK_HOSTS, MEDIA_DIR, ".bin")):
         try:
             host = (urllib.parse.urlparse(url).hostname or "").lower()
         except (TypeError, ValueError):
@@ -271,17 +314,18 @@ def forget(url):
         name = hashlib.sha1(url.encode("utf-8")).hexdigest()[:24]
         try:
             (directory / f"{name}{suffix}").unlink()
-            return True
+            removed = True
         except OSError:
-            return False
-    return False
+            pass
+    return removed
 
 
 def stats():
     """How much has been kept, for /healthz."""
     out = {}
     for label, pattern in (("hero", "*.jpg"), ("caps", "caps/*.jpg"),
-                           ("faces", "faces/*.jpg"), ("backs", "backs/*.bin")):
+                           ("faces", "faces/*.jpg"), ("backs", "backs/*.bin"),
+                           ("profile-media", "profile-media/*.bin")):
         try:
             files = list(ART_DIR.glob(pattern))
         except OSError:

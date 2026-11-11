@@ -36,6 +36,7 @@ Steam. Everything is a GET, everything is cached, and nothing is written to disk
                                     picture at all
     GET  /versus.svg?q=<a>&vs=<b>   two profiles on one card, figure by figure
     GET  /versus.png?q=<a>&vs=<b>   large shareable PNG, including common games
+    GET  /versus.webp?q=<a>&vs=<b>  comparison with equipped backgrounds and animated portraits
     GET  /artwork.svg?q=<anything>  the large one, made to be downloaded and
                                     uploaded to Steam as artwork
 
@@ -1063,8 +1064,11 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def send_png(self, body, ttl):
+        return self.send_picture(body, ttl, "image/png")
+
+    def send_picture(self, body, ttl, content_type):
         self.send_response(200)
-        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", f"public, max-age={ttl}")
         self.end_headers()
@@ -2038,7 +2042,7 @@ class Handler(BaseHTTPRequestHandler):
                         "badge": embed.badge, "artwork": embed.artwork}[kind]
                 return self.send_svg(draw(profile, o), ttl)
 
-            if url.path == "/versus.png":
+            if url.path in ("/versus.png", "/versus.webp"):
                 who, rival = one("q"), one("vs")
                 if not who or not rival:
                     raise Fail(400, "@err.bad_steamid")
@@ -2052,10 +2056,19 @@ class Handler(BaseHTTPRequestHandler):
                     self.gate("embed", key=f"p:{sid}", subject=sid)
                     ids.append(sid)
                     profiles.append(do_profile(sid))
-                # Profile lookups happen before the PNG cache lock, like og.png.
-                png = cached(f"versus-png:2:{ids[0]}:{ids[1]}:{lang}", TTL,
-                             lambda: versus_card.render(*profiles, lang))
-                return self.send_png(png, TTL)
+                animated = url.path.endswith(".webp")
+                kind = "webp" if animated else "png"
+                key = f"versus-{kind}:3:{ids[0]}:{ids[1]}:{lang}"
+                picture = cached_value(key)
+                if picture is None:
+                    # CDN downloads and animation encoding must not hold the
+                    # global profile cache lock. Serialize heavy exports only.
+                    with guard.Cold(), versus_card.EXPORT_LOCK:
+                        picture = cached_value(key)
+                        if picture is None:
+                            picture = versus_card.render(*profiles, lang, animated=animated)
+                            cached(key, TTL, lambda: picture)
+                return self.send_picture(picture, TTL, f"image/{kind}")
             if url.path == "/versus.svg":
                 # The only picture on this service that is about two people, so
                 # the only one that is two lookups. Both are priced separately
@@ -2361,7 +2374,7 @@ class Handler(BaseHTTPRequestHandler):
             label = words["common_one" if common == 1 else "common_many"]
             return self.send_json(200, {
                 "text": f"{a} × {b} · {common} {label}\n{base}/u/{first_id}/vs/{second_id}",
-                "images": [{"url": f"{base}/api/versus.png?q={first_id}&vs={second_id}&lang={lang}&v=2"}]})
+                "images": [{"url": f"{base}/api/versus.webp?q={first_id}&vs={second_id}&lang={lang}&v=3"}]})
         except Fail as e:
             if e.status == 429 or str(e.message).startswith("@err.busy") or e.status == 401:
                 return self.send_json(429, {"error": words["busy"]})
