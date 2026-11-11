@@ -49,7 +49,7 @@ class AnnoyTest(unittest.TestCase):
         status, body = self.call({"v": 1, "command": "steam", "text": "versus gabe ana", "locale": "en"})
         self.assertEqual(status, 200)
         self.assertEqual(body["text"], "Rabscuttle × Ana · 1 game in common\nhttps://steamprofiler.org/u/76561197960287930/vs/76561197960265728")
-        self.assertEqual(body["images"], [{"url": "https://steamprofiler.org/api/versus.png?q=76561197960287930&vs=76561197960265728&lang=en"}])
+        self.assertEqual(body["images"], [{"url": "https://steamprofiler.org/api/versus.png?q=76561197960287930&vs=76561197960265728&lang=en&v=2"}])
 
     def test_errors_are_sentences(self):
         status, body = self.call({"v": 1, "command": "steam", "text": "profile ninguem", "locale": "pt-BR"})

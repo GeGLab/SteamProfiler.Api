@@ -12,7 +12,8 @@ results, and serves the
 
 The service uses Python's standard library for its API, fetching and persistence.
 Shareable PNG comparison cards use Pillow for Unicode typography and image
-decoding, with the bundled OFL-licensed Inter font. You provide your own Steam
+decoding, with SteamProfiler's logo, amber palette and OFL-licensed Bricolage
+Grotesque, Archivo and IBM Plex Mono fonts. You provide your own Steam
 Web API key and run your own instance.
 
 ## Features

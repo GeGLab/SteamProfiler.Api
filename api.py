@@ -2053,7 +2053,7 @@ class Handler(BaseHTTPRequestHandler):
                     ids.append(sid)
                     profiles.append(do_profile(sid))
                 # Profile lookups happen before the PNG cache lock, like og.png.
-                png = cached(f"versus-png:1:{ids[0]}:{ids[1]}:{lang}", TTL,
+                png = cached(f"versus-png:2:{ids[0]}:{ids[1]}:{lang}", TTL,
                              lambda: versus_card.render(*profiles, lang))
                 return self.send_png(png, TTL)
             if url.path == "/versus.svg":
@@ -2361,7 +2361,7 @@ class Handler(BaseHTTPRequestHandler):
             label = words["common_one" if common == 1 else "common_many"]
             return self.send_json(200, {
                 "text": f"{a} × {b} · {common} {label}\n{base}/u/{first_id}/vs/{second_id}",
-                "images": [{"url": f"{base}/api/versus.png?q={first_id}&vs={second_id}&lang={lang}"}]})
+                "images": [{"url": f"{base}/api/versus.png?q={first_id}&vs={second_id}&lang={lang}&v=2"}]})
         except Fail as e:
             if e.status == 429 or str(e.message).startswith("@err.busy") or e.status == 401:
                 return self.send_json(429, {"error": words["busy"]})

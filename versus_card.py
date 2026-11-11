@@ -1,7 +1,7 @@
 """A shareable 1600 px comparison card. Asset loading is bounded and optional.
 
-The PNG is independent of the chat app's theme. Pillow supplies Unicode font
-rendering, image decoding and antialiasing; Inter travels with its OFL license.
+The logo, palette and fonts come from SteamProfiler.Front/site. Pillow supplies
+font rendering, image decoding and antialiasing; fonts retain their OFL licenses.
 """
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
@@ -14,15 +14,19 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 import art
 
 WIDTH, HEIGHT = 1600, 1390
-FONT = Path(__file__).parent / "assets" / "fonts" / "Inter.ttf"
-BG = (10, 16, 29)
-PANEL = (19, 28, 46)
-LINE = (43, 55, 77)
-WHITE = (244, 247, 255)
-MUTED = (152, 166, 189)
-LEFT = (177, 160, 255)
-RIGHT = (80, 225, 204)
-GOLD = (246, 211, 139)
+ASSETS = Path(__file__).parent / "assets"
+FONTS = {"sans": "Archivo.ttf", "display": "BricolageGrotesque.ttf", "mono": "IBMPlexMono.ttf"}
+BRAND_MARK = ASSETS / "brand" / "steamprofiler.png"
+# SteamProfiler.Front/site/style.css: bg, panel, panel-2, line, text, dim, accent.
+BG = (11, 10, 14)
+PANEL = (19, 18, 25)
+PANEL_2 = (26, 24, 34)
+LINE = (40, 38, 49)
+WHITE = (238, 236, 243)
+MUTED = (142, 138, 155)
+LEFT = (255, 180, 84)
+RIGHT = WHITE
+GOLD = LEFT
 
 TEXT = {
     "pt": {"tag": "COMPARAÇÃO DE PERFIS", "title": "O próximo jogo é melhor juntos.",
@@ -61,15 +65,22 @@ def _amount(value):
 
 
 @lru_cache(maxsize=72)
-def _font(size, weight=400):
-    font = ImageFont.truetype(str(FONT), size)
-    font.set_variation_by_axes([32, weight])
+def _font(size, weight=400, family="sans"):
+    font = ImageFont.truetype(str(ASSETS / "fonts" / FONTS[family]), size)
+    try:
+        axes = font.get_variation_axes()
+        font.set_variation_by_axes([
+            min(axis["maximum"], max(axis["minimum"], weight if b"Weight" in axis["name"] else size if b"Optical" in axis["name"] else axis["default"]))
+            for axis in axes
+        ])
+    except OSError:
+        pass  # IBM Plex Mono is a static font.
     return font
 
 
-def _fit(draw, value, size, weight, width):
+def _fit(draw, value, size, weight, width, family):
     value = " ".join(str(value or "?").split())
-    font = _font(size, weight)
+    font = _font(size, weight, family)
     if draw.textlength(value, font=font) <= width:
         return value
     while value and draw.textlength(value + "…", font=font) > width:
@@ -77,10 +88,11 @@ def _fit(draw, value, size, weight, width):
     return value.rstrip() + "…"
 
 
-def _text(draw, value, xy, size=24, weight=400, colour=WHITE, width=None):
+def _text(draw, value, xy, size=24, weight=400, colour=WHITE, width=None, family=None):
+    family = family or ("display" if size >= 34 else "sans")
     if width is not None:
-        value = _fit(draw, value, size, weight, width)
-    draw.text(xy, str(value), font=_font(size, weight), fill=colour, anchor="lt")
+        value = _fit(draw, value, size, weight, width, family)
+    draw.text(xy, str(value), font=_font(size, weight, family), fill=colour, anchor="lt")
 
 
 def _image(body, size):
@@ -140,19 +152,15 @@ def render(first, second, locale="pt-BR", assets=None):
     assets = load_assets(first, second, data["games"]) if assets is None else assets
     canvas = Image.new("RGB", (WIDTH, HEIGHT), BG)
     draw = ImageDraw.Draw(canvas)
-    # Quiet blue-violet atmosphere, with no dependency on a community's palette.
-    for y in range(HEIGHT):
-        t = y / HEIGHT
-        colour = tuple(round(a * (1 - t) + b * t) for a, b in zip((18, 25, 48), BG))
-        draw.line((0, y, WIDTH, y), fill=colour)
     for x in range(64, WIDTH, 48):
         for y in range(28, 172, 48):
-            draw.ellipse((x, y, x + 2, y + 2), fill=(47, 56, 81))
-    draw.rounded_rectangle((64, 51, 96, 83), radius=10, fill=LEFT)
-    draw.line((73, 69, 80, 62, 88, 70), fill=BG, width=3)
-    draw.ellipse((83, 58, 91, 66), outline=BG, width=2)
-    _text(draw, "STEAMPROFILER", (110, 56), 22, 750)
-    _text(draw, words["tag"], (1160, 60), 17, 650, MUTED, width=365)
+            draw.ellipse((x, y, x + 2, y + 2), fill=LINE)
+    with Image.open(BRAND_MARK) as mark:
+        canvas.paste(mark.convert("RGB").resize((48, 48), Image.Resampling.LANCZOS), (64, 44))
+    _text(draw, "steamprofiler", (128, 58), 25, 600, family="mono")
+    end = 128 + draw.textlength("steamprofiler", font=_font(25, 600, "mono"))
+    _text(draw, ".org", (end, 58), 25, 400, MUTED, family="mono")
+    _text(draw, words["tag"], (1160, 60), 17, 600, MUTED, width=365, family="mono")
     _text(draw, words["title"], (64, 111), 48, 730, width=1465)
     _text(draw, words["sub"], (66, 174), 24, 400, MUTED)
 
@@ -174,21 +182,21 @@ def render(first, second, locale="pt-BR", assets=None):
         _text(draw, name, (x + 174, 277), 32, 720, width=488)
         level = info.get("level")
         subtitle = f"{words['level']} {level}" if level is not None else "STEAM PLAYER"
-        _text(draw, subtitle, (x + 176, 326), 18, 600, accent)
+        _text(draw, subtitle, (x + 176, 326), 18, 600, accent, family="mono")
         draw.line((x + 52, 390, x + 656, 390), fill=LINE, width=1)
         available = data["available"][index]
         total_hours = (profile.get("totals") or {}).get("hours")
         owned = len(data["libraries"][index])
         _text(draw, _number(total_hours, lang) if available else "—", (x + 52, 415), 48, 700, accent)
-        _text(draw, words["hours"], (x + 54, 481), 16, 600, MUTED)
+        _text(draw, words["hours"], (x + 54, 481), 16, 500, MUTED, family="mono")
         _text(draw, _number(owned, lang) if available else "—", (x + 396, 415), 48, 700)
-        _text(draw, words["games"], (x + 398, 481), 16, 600, MUTED)
+        _text(draw, words["games"], (x + 398, 481), 16, 500, MUTED, family="mono")
     draw.ellipse((768, 344, 832, 408), fill=BG, outline=LINE, width=2)
     _text(draw, "VS", (783, 367), 19, 750, MUTED)
 
     # Ownership overlap is measured separately against each person's library;
     # there is no invented compatibility score or winner for owning more games.
-    draw.rounded_rectangle((64, 562, 1536, 750), radius=25, fill=(24, 35, 53), outline=(48, 65, 83), width=1)
+    draw.rounded_rectangle((64, 562, 1536, 750), radius=25, fill=PANEL_2, outline=LINE, width=1)
     draw.ellipse((105, 613, 166, 674), outline=LEFT, width=5)
     draw.ellipse((141, 613, 202, 674), outline=RIGHT, width=5)
     public = all(data["available"])
@@ -217,7 +225,7 @@ def render(first, second, locale="pt-BR", assets=None):
             ImageDraw.Draw(mask).rounded_rectangle((0, 0, 115, 81), radius=10, fill=255)
             canvas.paste(capsule, (x + 14, y + 14), mask)
         else:
-            draw.rounded_rectangle((x + 14, y + 14, x + 130, y + 96), radius=10, fill=(32, 45, 69))
+            draw.rounded_rectangle((x + 14, y + 14, x + 130, y + 96), radius=10, fill=PANEL_2)
             _text(draw, f"{index + 1:02}", (x + 50, y + 41), 24, 650, MUTED)
         _text(draw, game["name"], (x + 151, y + 19), 23, 650, width=530)
         _text(draw, _hours(game["left"], lang), (x + 153, y + 58), 21, 650, LEFT)
@@ -234,7 +242,7 @@ def render(first, second, locale="pt-BR", assets=None):
     if data["common"] > 6:
         _text(draw, words["more"].format(n=data["common"] - 6), (66, 1306), 20, 500, MUTED)
     draw.line((64, 1345, 1536, 1345), fill=LINE)
-    _text(draw, "steamprofiler.org", (64, 1364), 17, 650, WHITE)
+    _text(draw, "steamprofiler.org", (64, 1364), 17, 600, WHITE, family="mono")
     _text(draw, words["public"], (580, 1364), 17, 400, MUTED, width=950)
     output = BytesIO()
     canvas.save(output, format="PNG", optimize=True)

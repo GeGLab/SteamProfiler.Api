@@ -32,6 +32,8 @@ class VersusCardTest(unittest.TestCase):
                 self.assertEqual(image.format, "PNG")
                 self.assertEqual(image.size, (1600, 1390))
                 self.assertEqual(image.mode, "RGB")
+                self.assertEqual(image.getpixel((0, 800)), (11, 10, 14))
+                self.assertEqual(image.getpixel((76, 68)), (255, 180, 84))
             self.assertLess(len(content), 8 * 1024 * 1024)
 
     def test_private_empty_and_bad_optional_images_still_draw(self):
