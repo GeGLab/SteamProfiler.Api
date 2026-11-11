@@ -10,9 +10,10 @@ public Steam profiles, enriches them with store and community data, caches the
 results, and serves the
 [SteamProfiler frontend](https://github.com/GustavoHSCruz/SteamProfiler.Front).
 
-The application uses only Python's standard library: no framework, package
-manager, or runtime dependency. You provide your own Steam Web API key and run
-your own instance.
+The service uses Python's standard library for its API, fetching and persistence.
+Shareable PNG comparison cards use Pillow for Unicode typography and image
+decoding, with the bundled OFL-licensed Inter font. You provide your own Steam
+Web API key and run your own instance.
 
 ## Features
 
@@ -94,9 +95,10 @@ in the private security history.
 
 ## Run without Docker
 
-Python 3.12 or newer is recommended. There is nothing to install:
+Python 3.12 or newer is recommended. Install the pinned image renderer:
 
 ```sh
+python3 -m pip install -r requirements.txt
 set -a
 . ./.env
 set +a
@@ -238,7 +240,8 @@ tree for common secret leaks, and validates nginx and Docker Compose.
 A rewrite in .NET 10 is growing in [`v2/`](v2/) and runs beside this service
 under `/api/v2`, backed by PostgreSQL (the `db` and `api-v2` services in
 `docker-compose.yml`). The Python service above is frozen at tag `v1.0.0` and
-only receives security fixes until 2027-04-13. The plan, the phases and what is
+only receives security fixes until 2027-04-13, except for the first-party Annoy
+integration and its shareable export cards. The plan, the phases and what is
 already live are in [docs/v2/PLANO.md](docs/v2/PLANO.md).
 
 ```sh

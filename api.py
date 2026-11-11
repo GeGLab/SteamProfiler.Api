@@ -35,6 +35,7 @@ Steam. Everything is a GET, everything is cached, and nothing is written to disk
     GET  /bars.txt?q=<anything>     the same chart for a place that takes no
                                     picture at all
     GET  /versus.svg?q=<a>&vs=<b>   two profiles on one card, figure by figure
+    GET  /versus.png?q=<a>&vs=<b>   large shareable PNG, including common games
     GET  /artwork.svg?q=<anything>  the large one, made to be downloaded and
                                     uploaded to Steam as artwork
 
@@ -103,6 +104,7 @@ import guard
 import inv
 import meta
 import og
+import versus_card
 import store
 import support
 
@@ -2036,6 +2038,24 @@ class Handler(BaseHTTPRequestHandler):
                         "badge": embed.badge, "artwork": embed.artwork}[kind]
                 return self.send_svg(draw(profile, o), ttl)
 
+            if url.path == "/versus.png":
+                who, rival = one("q"), one("vs")
+                if not who or not rival:
+                    raise Fail(400, "@err.bad_steamid")
+                lang = "pt" if one("lang").lower().startswith("pt") else "en"
+                profiles, ids = [], []
+                for value in (who, rival):
+                    self.gate("embed", key=f"r:{value.lower()}")
+                    sid = do_resolve(value)["steamid"]
+                    if blocks.blocked(sid):
+                        return self.send_empty(404)
+                    self.gate("embed", key=f"p:{sid}", subject=sid)
+                    ids.append(sid)
+                    profiles.append(do_profile(sid))
+                # Profile lookups happen before the PNG cache lock, like og.png.
+                png = cached(f"versus-png:1:{ids[0]}:{ids[1]}:{lang}", TTL,
+                             lambda: versus_card.render(*profiles, lang))
+                return self.send_png(png, TTL)
             if url.path == "/versus.svg":
                 # The only picture on this service that is about two people, so
                 # the only one that is two lookups. Both are priced separately
@@ -2285,13 +2305,13 @@ class Handler(BaseHTTPRequestHandler):
                "busy": "Muitas consultas agora. Tente de novo em instantes.",
                "down": "A Steam não respondeu. Tente de novo.",
                "games": "{games} jogos · {hours} h jogadas",
-               "versus": "{a}: {ga} jogos, {ha} h · {b}: {gb} jogos, {hb} h · {common} jogos em comum"},
+               "common_one": "jogo em comum", "common_many": "jogos em comum"},
         "en": {"usage": "Use /steam profile <profile> or /steam versus <profile> <profile>.",
                "not_found": "Steam profile not found: {who}.",
                "busy": "Too many lookups right now. Try again shortly.",
                "down": "Steam did not answer. Try again.",
                "games": "{games} games · {hours} h played",
-               "versus": "{a}: {ga} games, {ha} h · {b}: {gb} games, {hb} h · {common} games in common"},
+               "common_one": "game in common", "common_many": "games in common"},
     }
 
     def annoy(self):
@@ -2334,11 +2354,14 @@ class Handler(BaseHTTPRequestHandler):
             second_id, second = lookup(args[2])
             if blocks.blocked(first_id) or blocks.blocked(second_id):
                 raise Fail(404, words["not_found"].format(who=args[1 if blocks.blocked(first_id) else 2][:40]))
-            a, ga, ha, apps_a = facts(first)
-            b, gb, hb, apps_b = facts(second)
-            return self.send_json(200, {"text": words["versus"].format(
-                a=a, ga=ga, ha=ha, b=b, gb=gb, hb=hb, common=len(apps_a & apps_b))
-                + f"\n{base}/u/{first_id}\n{base}/u/{second_id}"})
+            a, _, _, _ = facts(first)
+            b, _, _, _ = facts(second)
+            common = versus_card.comparison(first, second)["common"]
+            lang = "pt" if str(body.get("locale", "")).lower().startswith("pt") else "en"
+            label = words["common_one" if common == 1 else "common_many"]
+            return self.send_json(200, {
+                "text": f"{a} × {b} · {common} {label}\n{base}/u/{first_id}/vs/{second_id}",
+                "images": [{"url": f"{base}/api/versus.png?q={first_id}&vs={second_id}&lang={lang}"}]})
         except Fail as e:
             if e.status == 429 or str(e.message).startswith("@err.busy") or e.status == 401:
                 return self.send_json(429, {"error": words["busy"]})

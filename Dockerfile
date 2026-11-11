@@ -10,6 +10,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# Shareable comparison cards need Unicode typography and bounded JPEG/PNG decoding.
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
 RUN addgroup -S steamprofiler \
     && adduser -S -G steamprofiler -u 10001 steamprofiler \
     && mkdir -p /app/data \
