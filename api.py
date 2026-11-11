@@ -2176,6 +2176,10 @@ class Handler(BaseHTTPRequestHandler):
             # auth_request off for the same reason.
             if url.path == "/appeal":
                 return self.appeal()
+            # The Annoy integration (contract v1 at devannoy.geg.dev.br/docs):
+            # "/steam profile <id>" and "/steam versus <id> <id>" in a chat.
+            if url.path == "/annoy":
+                return self.annoy()
             # Also before read_json, and the token first: this is the one route
             # allowed to hand the process half a megabyte, so what buys the
             # bigger ceiling is the token and not the path. An unauthenticated
@@ -2274,6 +2278,73 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             traceback.print_exc()
             self.send_json(500, {"error": "@err.save_failed"})
+
+    ANNOY_TEXT = {
+        "pt": {"usage": "Use /steam profile <perfil> ou /steam versus <perfil> <perfil>.",
+               "not_found": "Perfil Steam não encontrado: {who}.",
+               "busy": "Muitas consultas agora. Tente de novo em instantes.",
+               "down": "A Steam não respondeu. Tente de novo.",
+               "games": "{games} jogos · {hours} h jogadas",
+               "versus": "{a}: {ga} jogos, {ha} h · {b}: {gb} jogos, {hb} h · {common} jogos em comum"},
+        "en": {"usage": "Use /steam profile <profile> or /steam versus <profile> <profile>.",
+               "not_found": "Steam profile not found: {who}.",
+               "busy": "Too many lookups right now. Try again shortly.",
+               "down": "Steam did not answer. Try again.",
+               "games": "{games} games · {hours} h played",
+               "versus": "{a}: {ga} games, {ha} h · {b}: {gb} games, {hb} h · {common} games in common"},
+    }
+
+    def annoy(self):
+        """One call of the Annoy integration. Answers JSON: text, images, or error."""
+        body = self.read_json()
+        words = self.ANNOY_TEXT["pt" if str(body.get("locale", "")).lower().startswith("pt") else "en"]
+        args = str(body.get("text") or "").split()
+        if body.get("v") != 1 or body.get("command") != "steam" or not args or \
+                (args[0] not in ("profile", "versus")) or len(args) != (2 if args[0] == "profile" else 3):
+            return self.send_json(400, {"error": words["usage"]})
+        base = self.site_base()
+
+        def lookup(who):
+            if not 2 <= len(who) <= 120:
+                raise Fail(404, words["not_found"].format(who=who[:40]))
+            self.gate("resolve", key=f"r:{who.lower()}")
+            try:
+                sid = do_resolve(who)["steamid"]
+            except Fail:
+                raise Fail(404, words["not_found"].format(who=who[:40]))
+            self.gate("embed", key=f"p:{sid}", subject=sid)
+            return sid, do_profile(sid)
+
+        def facts(profile):
+            library = profile.get("library") or []
+            name = ((profile.get("profile") or {}).get("persona") or "").strip() or "?"
+            hours = round((profile.get("totals") or {}).get("hours") or 0)
+            return name, len(library), hours, {g.get("appid") for g in library if g.get("appid")}
+
+        try:
+            if args[0] == "profile":
+                sid, profile = lookup(args[1])
+                if blocks.blocked(sid):
+                    raise Fail(404, words["not_found"].format(who=args[1][:40]))
+                name, games, hours, _ = facts(profile)
+                return self.send_json(200, {
+                    "text": f"{name} · {words['games'].format(games=games, hours=hours)}\n{base}/u/{sid}",
+                    "images": [{"url": f"{base}/api/og.png?q={sid}"}]})
+            first_id, first = lookup(args[1])
+            second_id, second = lookup(args[2])
+            if blocks.blocked(first_id) or blocks.blocked(second_id):
+                raise Fail(404, words["not_found"].format(who=args[1 if blocks.blocked(first_id) else 2][:40]))
+            a, ga, ha, apps_a = facts(first)
+            b, gb, hb, apps_b = facts(second)
+            return self.send_json(200, {"text": words["versus"].format(
+                a=a, ga=ga, ha=ha, b=b, gb=gb, hb=hb, common=len(apps_a & apps_b))
+                + f"\n{base}/u/{first_id}\n{base}/u/{second_id}"})
+        except Fail as e:
+            if e.status == 429 or str(e.message).startswith("@err.busy") or e.status == 401:
+                return self.send_json(429, {"error": words["busy"]})
+            if str(e.message).startswith("@"):
+                return self.send_json(e.status if e.status < 500 else 502, {"error": words["down"]})
+            return self.send_json(e.status, {"error": e.message})
 
     def appeal(self):
         """Someone contesting a ban, from the address the ban is on.
